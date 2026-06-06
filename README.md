@@ -16,6 +16,7 @@ A Laboratory Information System (LIS) demo that lets users submit lab orders and
 cd "C:\Work Folder\Mine Workspaces\LIS Dot NET 8 and Angular\backend\LIS.Api"
 dotnet restore
 dotnet run
+After that you can see the APIs on this URL on browser http://localhost:5062/swagger/index.html
 or you can run on Visual studio on http protocole. Otherwise you can observe CORS error.
 ```
 
