@@ -1,0 +1,33 @@
+@LIS.Api_HostAddress = http://localhost:5062
+
+POST {{LIS.Api_HostAddress}}/api/orders
+Content-Type: application/json
+
+{
+  "patientName": "Jane Doe",
+  "testType": "CBC",
+  "priority": "STAT",
+  "collectionDate": "2026-06-10"
+}
+
+###
+
+GET {{LIS.Api_HostAddress}}/api/orders
+Accept: application/json
+
+###
+
+GET {{LIS.Api_HostAddress}}/api/orders?priority=high
+Accept: application/json
+
+###
+
+POST {{LIS.Api_HostAddress}}/api/orders
+Content-Type: application/json
+
+{
+  "patientName": "",
+  "testType": "Invalid",
+  "priority": "Urgent",
+  "collectionDate": "2020-01-01"
+}
