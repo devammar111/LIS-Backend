@@ -1,132 +1,107 @@
-using Moq;
+using LIS.Api.Data;
 using LIS.Api.Models;
 using LIS.Api.Repositories;
 using LIS.Api.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace LIS.Api.Tests;
 
-public class OrderServiceTests
+public class OrderServiceTests : IDisposable
 {
-    private readonly Mock<IOrderRepository> _repository = new();
+    private readonly TestDbContextFactory _factory = new();
+    private readonly LisDbContext _db;
     private readonly OrderService _service;
 
     public OrderServiceTests()
     {
-        _service = new OrderService(_repository.Object);
+        _db = _factory.Create();
+        var repository = new OrderRepository(_db);
+        _service = new OrderService(
+            repository,
+            new FakeCurrentUser(Guid.NewGuid(), "tech"),
+            NullLogger<OrderService>.Instance);
     }
 
     [Fact]
-    public async Task CreateOrderAsync_ReturnsValidationErrors_WhenFieldsAreInvalid()
+    public async Task CreateOrderAsync_PersistsOrder_AndNormalizesEnums()
     {
         var request = new CreateOrderRequest
         {
-            PatientName = "",
-            TestType = "Invalid",
-            Priority = "Urgent",
-            CollectionDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-1))
-        };
-
-        var (_, errors) = await _service.CreateOrderAsync(request);
-
-        Assert.NotNull(errors);
-        Assert.Contains("patientName", errors!.Keys);
-        Assert.Contains("testType", errors.Keys);
-        Assert.Contains("priority", errors.Keys);
-        Assert.Contains("collectionDate", errors.Keys);
-        _repository.Verify(repo => repo.AddAsync(It.IsAny<LabOrder>(), It.IsAny<CancellationToken>()), Times.Never);
-    }
-
-    [Fact]
-    public async Task CreateOrderAsync_PersistsOrder_WhenRequestIsValid()
-    {
-        var request = new CreateOrderRequest
-        {
-            PatientName = "John Smith",
+            PatientName = "  John Smith  ",
             TestType = "cbc",
             Priority = "stat",
             CollectionDate = DateOnly.FromDateTime(DateTime.Today)
         };
 
-        _repository
-            .Setup(repo => repo.AddAsync(It.IsAny<LabOrder>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((LabOrder order, CancellationToken _) => order);
+        var response = await _service.CreateOrderAsync(request);
 
-        var (order, errors) = await _service.CreateOrderAsync(request);
+        Assert.Equal("John Smith", response.PatientName);
+        Assert.Equal("CBC", response.TestType);
+        Assert.Equal("STAT", response.Priority);
 
-        Assert.Null(errors);
-        Assert.NotNull(order);
-        Assert.Equal("John Smith", order!.PatientName);
-        Assert.Equal("CBC", order.TestType);
-        Assert.Equal("STAT", order.Priority);
+        var persisted = Assert.Single(_db.Orders);
+        Assert.Equal(TestType.CBC, persisted.TestType);
+        Assert.Equal(Priority.STAT, persisted.Priority);
+    }
+
+    [Fact]
+    public async Task CreateOrderAsync_MapsLipidPanelDisplayName()
+    {
+        var request = new CreateOrderRequest
+        {
+            PatientName = "Jane Doe",
+            TestType = "Lipid Panel",
+            Priority = "Routine",
+            CollectionDate = DateOnly.FromDateTime(DateTime.Today)
+        };
+
+        var response = await _service.CreateOrderAsync(request);
+
+        Assert.Equal("Lipid Panel", response.TestType);
+        Assert.Equal(TestType.LipidPanel, Assert.Single(_db.Orders).TestType);
     }
 
     [Fact]
     public async Task GetOrdersAsync_FiltersStatOrders_WhenPriorityIsHigh()
     {
-        var orders = new List<LabOrder>
-        {
-            new()
-            {
-                Id = Guid.NewGuid(),
-                PatientName = "A",
-                TestType = "CBC",
-                Priority = "Routine",
-                CollectionDate = DateOnly.FromDateTime(DateTime.Today.AddDays(2)),
-                CreatedAt = DateTime.UtcNow
-            },
-            new()
-            {
-                Id = Guid.NewGuid(),
-                PatientName = "B",
-                TestType = "BMP",
-                Priority = "STAT",
-                CollectionDate = DateOnly.FromDateTime(DateTime.Today),
-                CreatedAt = DateTime.UtcNow
-            }
-        };
+        await SeedOrderAsync("A", TestType.CBC, Priority.Routine, DateTime.Today.AddDays(2));
+        await SeedOrderAsync("B", TestType.BMP, Priority.STAT, DateTime.Today);
 
-        _repository
-            .Setup(repo => repo.GetAllAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(orders);
+        var response = await _service.GetOrdersAsync(new OrderQueryParameters { Priority = "high" });
 
-        var response = await _service.GetOrdersAsync("high");
-
-        Assert.Single(response.Orders);
-        Assert.Equal("STAT", response.Orders[0].Priority);
+        Assert.Equal(1, response.TotalCount);
+        Assert.Equal("STAT", Assert.Single(response.Items).Priority);
     }
 
     [Fact]
     public async Task GetOrdersAsync_SortsByCollectionDateDescending()
     {
-        var orders = new List<LabOrder>
+        await SeedOrderAsync("Earlier", TestType.UA, Priority.Routine, DateTime.Today);
+        await SeedOrderAsync("Later", TestType.UA, Priority.Routine, DateTime.Today.AddDays(5));
+
+        var response = await _service.GetOrdersAsync(new OrderQueryParameters());
+
+        Assert.Equal("Later", response.Items[0].PatientName);
+        Assert.Equal("Earlier", response.Items[1].PatientName);
+    }
+
+    private async Task SeedOrderAsync(string name, TestType testType, Priority priority, DateTime collectionDate)
+    {
+        _db.Orders.Add(new LabOrder
         {
-            new()
-            {
-                Id = Guid.NewGuid(),
-                PatientName = "Earlier",
-                TestType = "UA",
-                Priority = "Routine",
-                CollectionDate = DateOnly.FromDateTime(DateTime.Today),
-                CreatedAt = DateTime.UtcNow
-            },
-            new()
-            {
-                Id = Guid.NewGuid(),
-                PatientName = "Later",
-                TestType = "UA",
-                Priority = "Routine",
-                CollectionDate = DateOnly.FromDateTime(DateTime.Today.AddDays(5)),
-                CreatedAt = DateTime.UtcNow
-            }
-        };
+            Id = Guid.NewGuid(),
+            PatientName = name,
+            TestType = testType,
+            Priority = priority,
+            CollectionDate = DateOnly.FromDateTime(collectionDate),
+            CreatedAt = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync();
+    }
 
-        _repository
-            .Setup(repo => repo.GetAllAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(orders);
-
-        var response = await _service.GetOrdersAsync(null);
-
-        Assert.Equal("Later", response.Orders[0].PatientName);
-        Assert.Equal("Earlier", response.Orders[1].PatientName);
+    public void Dispose()
+    {
+        _db.Dispose();
+        _factory.Dispose();
     }
 }

@@ -8,6 +8,12 @@ public record OrderResponse(
     DateOnly CollectionDate,
     DateTime CreatedAt);
 
-public record OrderListResponse(IReadOnlyList<OrderResponse> Orders);
-
-public record ValidationErrorResponse(IDictionary<string, string[]> Errors);
+/// <summary>
+/// Consistent paged envelope returned by list endpoints regardless of any active filter.
+/// </summary>
+public record PagedResponse<T>(
+    IReadOnlyList<T> Items,
+    int TotalCount,
+    int Page,
+    int PageSize,
+    int TotalPages);

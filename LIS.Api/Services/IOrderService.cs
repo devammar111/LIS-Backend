@@ -4,11 +4,11 @@ namespace LIS.Api.Services;
 
 public interface IOrderService
 {
-    Task<(OrderResponse? Order, IDictionary<string, string[]>? Errors)> CreateOrderAsync(
+    Task<OrderResponse> CreateOrderAsync(
         CreateOrderRequest request,
         CancellationToken cancellationToken = default);
 
-    Task<OrderListResponse> GetOrdersAsync(
-        string? priorityFilter,
+    Task<PagedResponse<OrderResponse>> GetOrdersAsync(
+        OrderQueryParameters query,
         CancellationToken cancellationToken = default);
 }

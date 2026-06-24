@@ -5,115 +5,89 @@ namespace LIS.Api.Services;
 
 public class OrderService : IOrderService
 {
-    private static readonly HashSet<string> AllowedTestTypes =
-        new(StringComparer.OrdinalIgnoreCase) { "CBC", "BMP", "Lipid Panel", "UA" };
-
-    private static readonly HashSet<string> AllowedPriorities =
-        new(StringComparer.OrdinalIgnoreCase) { "Routine", "STAT" };
-
     private readonly IOrderRepository _repository;
+    private readonly ICurrentUser _currentUser;
+    private readonly ILogger<OrderService> _logger;
 
-    public OrderService(IOrderRepository repository)
+    public OrderService(
+        IOrderRepository repository,
+        ICurrentUser currentUser,
+        ILogger<OrderService> logger)
     {
         _repository = repository;
+        _currentUser = currentUser;
+        _logger = logger;
     }
 
-    public async Task<(OrderResponse? Order, IDictionary<string, string[]>? Errors)> CreateOrderAsync(
+    public async Task<OrderResponse> CreateOrderAsync(
         CreateOrderRequest request,
         CancellationToken cancellationToken = default)
     {
-        var errors = ValidateRequest(request);
-        if (errors.Count > 0)
-        {
-            return (null, errors);
-        }
+        // Input has already been validated (FluentValidation) before reaching here,
+        // so the enum parses are guaranteed to succeed.
+        EnumDisplay.TryParseTestType(request.TestType, out var testType);
+        EnumDisplay.TryParsePriority(request.Priority, out var priority);
 
         var order = new LabOrder
         {
             Id = Guid.NewGuid(),
             PatientName = request.PatientName.Trim(),
-            TestType = NormalizeTestType(request.TestType),
-            Priority = NormalizePriority(request.Priority),
+            TestType = testType,
+            Priority = priority,
             CollectionDate = request.CollectionDate,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            CreatedByUserId = _currentUser.UserId
         };
 
         await _repository.AddAsync(order, cancellationToken);
-        return (ToResponse(order), null);
+        _logger.LogInformation(
+            "Order {OrderId} created by {Username}", order.Id, _currentUser.Username ?? "unknown");
+
+        return ToResponse(order);
     }
 
-    public async Task<OrderListResponse> GetOrdersAsync(
-        string? priorityFilter,
+    public async Task<PagedResponse<OrderResponse>> GetOrdersAsync(
+        OrderQueryParameters query,
         CancellationToken cancellationToken = default)
     {
-        var orders = await _repository.GetAllAsync(cancellationToken);
+        var priorityFilter = ResolvePriorityFilter(query.Priority);
 
-        IEnumerable<LabOrder> query = orders;
+        var (items, totalCount) = await _repository.GetPagedAsync(
+            priorityFilter, query.Page, query.PageSize, cancellationToken);
 
-        if (IsHighPriorityFilter(priorityFilter))
-        {
-            query = query.Where(order =>
-                order.Priority.Equals("STAT", StringComparison.OrdinalIgnoreCase));
-        }
+        var responses = items.Select(ToResponse).ToList();
+        var totalPages = totalCount == 0
+            ? 0
+            : (int)Math.Ceiling(totalCount / (double)query.PageSize);
 
-        var results = query
-            .OrderByDescending(order => order.CollectionDate)
-            .ThenByDescending(order => order.CreatedAt)
-            .Select(ToResponse)
-            .ToList();
-
-        return new OrderListResponse(results);
+        return new PagedResponse<OrderResponse>(
+            responses, totalCount, query.Page, query.PageSize, totalPages);
     }
 
-    private static Dictionary<string, string[]> ValidateRequest(CreateOrderRequest request)
+    /// <summary>
+    /// Maps the optional priority query value to an enum filter.
+    /// Accepts the legacy "high" alias (= STAT) plus "STAT"/"Routine"; anything else = no filter.
+    /// </summary>
+    private static Priority? ResolvePriorityFilter(string? priority)
     {
-        var errors = new Dictionary<string, string[]>();
-
-        if (string.IsNullOrWhiteSpace(request.PatientName))
+        if (string.IsNullOrWhiteSpace(priority))
         {
-            errors["patientName"] = ["Patient name is required."];
+            return null;
         }
 
-        if (string.IsNullOrWhiteSpace(request.TestType))
+        if (priority.Equals("high", StringComparison.OrdinalIgnoreCase))
         {
-            errors["testType"] = ["Test type is required."];
-        }
-        else if (!AllowedTestTypes.Contains(request.TestType.Trim()))
-        {
-            errors["testType"] = ["Test type must be one of: CBC, BMP, Lipid Panel, UA."];
+            return Priority.STAT;
         }
 
-        if (string.IsNullOrWhiteSpace(request.Priority))
-        {
-            errors["priority"] = ["Priority is required."];
-        }
-        else if (!AllowedPriorities.Contains(request.Priority.Trim()))
-        {
-            errors["priority"] = ["Priority must be Routine or STAT."];
-        }
-
-        if (request.CollectionDate == default)
-        {
-            errors["collectionDate"] = ["Collection date is required."];
-        }
-        else if (request.CollectionDate < DateOnly.FromDateTime(DateTime.Today))
-        {
-            errors["collectionDate"] = ["Collection date cannot be in the past."];
-        }
-
-        return errors;
+        return EnumDisplay.TryParsePriority(priority, out var parsed) ? parsed : null;
     }
-
-    private static bool IsHighPriorityFilter(string? priorityFilter) =>
-        !string.IsNullOrWhiteSpace(priorityFilter) &&
-        priorityFilter.Equals("high", StringComparison.OrdinalIgnoreCase);
-
-    private static string NormalizeTestType(string testType) =>
-        AllowedTestTypes.First(value => value.Equals(testType.Trim(), StringComparison.OrdinalIgnoreCase));
-
-    private static string NormalizePriority(string priority) =>
-        AllowedPriorities.First(value => value.Equals(priority.Trim(), StringComparison.OrdinalIgnoreCase));
 
     private static OrderResponse ToResponse(LabOrder order) =>
-        new(order.Id, order.PatientName, order.TestType, order.Priority, order.CollectionDate, order.CreatedAt);
+        new(order.Id,
+            order.PatientName,
+            order.TestType.ToDisplay(),
+            order.Priority.ToDisplay(),
+            order.CollectionDate,
+            order.CreatedAt);
 }
